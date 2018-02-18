@@ -1,0 +1,138 @@
+---
+title: "Untitled"
+author: "Tiff Stephens"
+date: "2/10/2018"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+```{r, include=FALSE}
+library(dplyr); library(tidyr); library(plyr); library(reshape2); library(lubridate); library(ggplot2); library(DT); library(leaflet); library(htmlwidgets); library(htmltools); library(shiny); library(mapview); library(sp); library(sf); library(knitr); library(cowplot); library(ggpmisc)
+theme_set(theme_classic())
+theme_set(theme_cowplot(font_size=12)) # default fontsize doesn't work well for online viewing
+```
+
+
+```{r, include=FALSE}
+# read clean file from github
+df.pig <- read.csv("https://raw.githubusercontent.com/tiffanybot/2014-2017/master/MIMS_pigments.csv", stringsAsFactors = FALSE, header = TRUE) # Pigments: (pc) phycocyanin; (pe) phycoerthryn; (pce) combination of pc and pe; (apc) phycobiliprotein; (chla) chlorophyll a
+
+df.enz <- read.csv("https://raw.githubusercontent.com/tiffanybot/2014-2017/master/MIMS_enzymes.csv", stringsAsFactors = FALSE, header = TRUE) # Enzymes: (ca) carbonic anhydrase; (eca) external carbonic anhydrase
+```
+
+
+\pigmentscleaning
+```{r, include=FALSE}
+# check 
+str(df.pig)
+
+# fix spelling mistake
+names(df.pig)[names(df.pig) == 'wetweigh_g'] <- 'wetweight_g' # rename site columns
+
+# remove pan, crucible, and sediment combo weights not necessary here
+df.pig = df.pig %>% 
+  mutate(pigment_redtot_ugg = pigment_pce_ugg + pigment_apc_ugg) %>% 
+  mutate(pigment_tot_ugg = pigment_pce_ugg + pigment_apc_ugg + pigment_chla_ugg) %>% 
+  select(-solute_volume_red_extraction1, -solute_volume_red_extraction2, -solute_volume_green_extraction, -wetweight_g, -wetdry_conversion, -dryweight_g)
+
+# reorganize columns
+df.pig <- df.pig[c('alga','light','metabolism','replicate','pigment_pc_ugg','pigment_pe_ugg','pigment_pce_ugg','pigment_apc_ugg','pigment_chla_ugg','pigment_redtot_ugg','pigment_tot_ugg')]
+```
+
+\enzymescleaning
+```{r, include=FALSE}
+# the dataset has the values for the samples and for blanks that were run in parallel with the samples. The sample values need to be corrected using the blanks
+
+# Total and external CA activity were calculated as (Tb/Ts–1)/FW, where Tb=the time it took for a blank sample with just assay buffer to drop 0.4 pH units, Ts=the time it took for the algal extract (total) or buffer with an intact thallus (external) to drop 0.4 pH units, and FW=fresh weight of the algae in grams. eCA activity was normalized to the dry weight of the thalli. The iCA activity was calculated by subtracting the eCA from the total CA activity (Hofmann et al. 2013).
+
+
+df.enz = df.enz %>% 
+  mutate(enzyme_activity = (blank_runtime_sec_0.4_pHunits / (sample_runtime_sec_0.4_pHunits - 1)) / dryweight_g, na.rm = TRUE)
+
+
+df.enz = df.enz %>% 
+  select(-sample_pH_change, -sample_runtime_sec_total, -sample_runtime_sec_0.4_pHunits, -sample_pH_units_persecond, -blank_pH_change, -blank_runtime_sec_total, -blank_runtime_sec_0.4_pHunits, -blank_pH_units_persecond, -sample_pH_start, -sample_pH_end, -blank_pH_start, -blank_pH_end, -dryweight_g, -na.rm)
+```
+
+
+```{r, include=FALSE}
+# use dcast to expand the 'enzyme_location' column, so that each enzyme has it's own column for each variable
+df.enz <- dcast(df.enz, alga + light + metabolism + replicate ~ enzyme_location, na.rm = TRUE) # dcast spread
+colnames(df.enz)[which(names(df.enz) == "CA")] <- "ca_tot_activity" # apply unique names
+colnames(df.enz)[which(names(df.enz) == "eCA")] <- "ca_ext_activity"
+
+# calculate internal ca activity
+df.enz = df.enz %>% 
+  mutate(ca_int_activity = ca_tot_activity - ca_ext_activity, na.rm = TRUE)
+
+df.enz = df.enz %>% 
+  select(-na.rm)
+```
+
+
+```{r, include=FALSE}
+# joining
+df.all <- left_join(df.enz, df.pig, by = c('alga','light','metabolism','replicate'))
+```
+
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+my.formula <- y ~ x # defined formula (linear regression) for stats labels on plot
+
+p1 = ggplot(df.all, aes(ca_int_activity, ca_ext_activity, color = metabolism)) +
+  geom_point(size=2) +
+  geom_smooth(method=lm, formula=y~x, se=FALSE, fullrange=FALSE) +
+  #theme(legend.justification=c(1,0), legend.position=c(1,0)) +
+  #xlab("Secondary sediment class (inside transect)\n")+ylab("\nResiduals: BG biomass per cm rhizome (g per msq, DW) x julian") +
+  stat_poly_eq(formula = my.formula, 
+               aes(label = paste(..rr.label.., sep = "~~~")), 
+               label.x.npc = 'right', label.y.npc = 'top', size = 4, parse = TRUE) +
+  stat_fit_glance(method = 'lm', method.args = list(formula = my.formula), geom = 'text',
+                  aes(label = paste("P-value = ", signif(..p.value.., digits = 3), sep = "")),
+                  label.x.npc = 'left', label.y.npc = 'top', size = 4) +
+  facet_wrap(~light, ncol=2)
+plot(p1)
+```
+
+```{r}
+
+p2 = ggplot(df.all, aes(light, ca_int_activity)) +
+  stat_summary(fun.y=mean, geom="bar", position="dodge")+
+  stat_summary(fun.data=mean_se, geom="errorbar", position=position_dodge(width=0.90), width=0.1)+
+  #labs(y="Blade RGR (mm/d)", title="Blade Elongation")+
+  facet_wrap(~metabolism, ncol=2)
+plot(p2)
+
+
+
+
+p04 <- ggplot(df.all, aes(light, ca_int_activity)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter(alpha = 0.3, width = 0.15) +
+  theme(legend.position="none") +
+  facet_wrap(~metabolism, ncol=2)
+plot(p04)
+
+
+```
+
+
+
+
+
+
